@@ -1,0 +1,21 @@
+{
+  "name": "artyfarty/vk_download_favs",
+  "description": "description_text",
+  "minimum-stability": "stable",
+  "license": "proprietary",
+  "authors": [
+    {
+      "name": "artyfarty",
+      "email": "mail@artyfarty.ru"
+    }
+  ],
+  "require": {
+    "getjump/vk": "~0.4.0",
+    "symfony/console": "~2"
+  },
+  "autoload": {
+    "psr-0": {
+      "Arty": "src"
+    }
+  }
+}
