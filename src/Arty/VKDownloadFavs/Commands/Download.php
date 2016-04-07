@@ -151,9 +151,9 @@ class Download extends Command {
         return function ($i, $post) use ($filterBy, $nest) {
             $l = $this->getLogger("process_post", $nest);
 
-            $l("Processing post {$post->id}");
+            $l("Processing post https://vk.com/fave?section=likes_posts&w=wall{$post->owner_id}_{$post->id}");
 
-            if ($this->owners && in_array($post->owner_id, $this->owners)) {
+            if ($this->owners && !in_array($post->owner_id, $this->owners)) {
                 $l("Diff. owner, skipping", 1);
                 return;
             }
@@ -218,6 +218,9 @@ class Download extends Command {
 
         if ($input->getOption('owners')) {
             $this->owners = explode(',', $input->getOption('owners'));
+            foreach ($this->owners as &$o) {
+                $o = +$o;
+            }
         }
 
         $postsToGet = [];
