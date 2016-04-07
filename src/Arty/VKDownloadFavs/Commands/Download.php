@@ -30,6 +30,7 @@ class Download extends Command {
             [
                 new InputOption('token', 't', InputOption::VALUE_REQUIRED, 'VK auth token'),
                 new InputOption('owners', 'o', InputOption::VALUE_OPTIONAL, 'Owners of media to download'),
+                //new InputOption('retries', 'r', InputOption::VALUE_OPTIONAL, 'Owners of media to download', 2),
             ]
         )
             ->setDescription('Скачать фото из избранных фото, постов и документов');
@@ -91,6 +92,9 @@ class Download extends Command {
             $l("Using best vk photo", 1);
         }
 
+        $retries = 2;
+
+        save_photo:
         $path = $genSavePath($chosenUrl, 1);
 
         if (file_exists($path)) {
@@ -105,16 +109,16 @@ class Download extends Command {
                 $l("Could not save", 2);
                 if ($chosenUrl != $vkUrl) {
                     $l("Falling back to vk best", 2);
-                    $path = $genSavePath($vkUrl, 2);
-
-                    $data = @file_get_contents($vkUrl);
-                    if ($data) {
-                        file_put_contents($path, $data);
-                        $l("Saved!", 2);
-                    } else {
-                        $l("Could not save :((((", 2);
-                    }
+                    $chosenUrl = $vkUrl;
+                    goto save_photo;
                 }
+
+                if ($retries) {
+                    $retries--;
+                    goto save_photo;
+                }
+
+                return;
             }
         }
 
@@ -184,19 +188,19 @@ class Download extends Command {
                         mkdir($saveDir);
                     }
 
+                    $retries = 2;
                     $path = "$saveDir/{$a->doc->title}";
+
+                    save_post_photo:
 
                     $l("Saving doc from {$a->doc->url} -> $path", 2);
                     if (file_exists($path)) {
                         $l("Doc already saved", 2);
                         return;
                     } else {
-                        $data = @file_get_contents($a->doc->url);
-                        if ($data) {
-                            file_put_contents($path, $data);
-                            $l("Saved!", 2);
-                        } else {
-                            $l("Could not save :(", 2);
+                        if ($retries) {
+                            $retries--;
+                            goto save_post_photo;
                         }
                     }
                 }
@@ -232,11 +236,11 @@ class Download extends Command {
             $processedB = 0;
             $b->each(
                 function ($i, $photo) use (&$postsToGet, &$photosToGet, &$processedB) {
-                    //$this->l("Processing photo#{$photo->id}", 1);
+                    $this->l("Processing https://vk.com/fave?z=photo{$photo->owner_id}_{$photo->id}", 1);
                     $processedB++;
 
-                    if ($this->owners && in_array($photo->owner_id, $this->owners)) {
-                        //$this->l("Diff. owner, skipping", 2);
+                    if ($this->owners && !in_array($photo->owner_id, $this->owners)) {
+                        $this->l("Diff. owner, skipping", 2);
                         return;
                     }
 
