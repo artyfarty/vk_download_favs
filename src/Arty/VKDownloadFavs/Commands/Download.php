@@ -107,15 +107,19 @@ class Download extends Command {
                 $l("Saved!", 2);
             } else {
                 $l("Could not save", 2);
-                if ($chosenUrl != $vkUrl) {
-                    $l("Falling back to vk best", 2);
-                    $chosenUrl = $vkUrl;
-                    goto save_photo;
-                }
 
                 if ($retries) {
+                    $l("Retrying", 2);
                     $retries--;
                     goto save_photo;
+                } else {
+                    if ($chosenUrl != $vkUrl) {
+                        $l("Falling back to vk best", 2);
+                        $chosenUrl = $vkUrl;
+                        goto save_photo;
+                    }
+
+                    $l("Giving up", 2);
                 }
 
                 return;
@@ -198,9 +202,19 @@ class Download extends Command {
                         $l("Doc already saved", 2);
                         return;
                     } else {
-                        if ($retries) {
-                            $retries--;
-                            goto save_post_photo;
+                        $data = @file_get_contents($a->doc->url);
+                        if ($data) {
+                            file_put_contents($path, $data);
+                            $l("Saved!", 2);
+                        } else {
+                            $l("Could not save :(", 2);
+                            if ($retries) {
+                                $l("Retrying", 2);
+                                $retries--;
+                                goto save_post_photo;
+                            }
+
+                            $l("Giving up", 2);
                         }
                     }
                 }
