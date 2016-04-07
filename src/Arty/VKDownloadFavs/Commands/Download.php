@@ -94,6 +94,7 @@ class Download extends Command {
 
         $retries = 2;
 
+        // ДА! Впервые в жизни я столкнулся с ситуацией когда GOTO реально жжот!
         save_photo:
         $path = $genSavePath($chosenUrl, 1);
 
