@@ -27,7 +27,7 @@ class GetToken extends Command {
         
         $auth
             ->setAppId($input->getOption("app_id"))
-            ->setScope('messages,photos,groups,status,wall,offline')
+            ->setScope('messages,photos,groups,status,wall,offline,friends')
             ->setSecret($input->getOption("app_secret"))
             ->setRedirectUri('https://oauth.vk.com/blank.html');
 
