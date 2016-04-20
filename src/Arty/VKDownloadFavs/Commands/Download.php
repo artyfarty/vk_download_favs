@@ -5,6 +5,7 @@
 
 namespace Arty\VKDownloadFavs\Commands;
 
+use Arty\VKDownloadFavs\VkRateLimitWatcher;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
@@ -24,12 +25,18 @@ class Download extends Command {
     /** @var int[] */
     protected $owners;
 
+    /**
+     * @var VkRateLimitWatcher $rlWatcher
+     */
+    protected $rlw;
+
 
     public function configure() {
         $this->setDefinition(
             [
                 new InputOption('token', 't', InputOption::VALUE_REQUIRED, 'VK auth token'),
                 new InputOption('owners', 'o', InputOption::VALUE_OPTIONAL, 'Owners of media to download'),
+                new InputOption('rate_limit', null, InputOption::VALUE_OPTIONAL, 'Rate limit (usec)', "550000")
                 //new InputOption('retries', 'r', InputOption::VALUE_OPTIONAL, 'Owners of media to download', 2),
             ]
         )
@@ -242,6 +249,8 @@ class Download extends Command {
             }
         }
 
+        $this->rlw = new VkRateLimitWatcher(+$input->getOption('rate_limit'), $output);
+
         $postsToGet = [];
         $photosToGet = [];
 
@@ -274,11 +283,14 @@ class Download extends Command {
                     //$vk->request('likes.delete', ['type' => 'photo', 'item_id' => $photo->id])->execute();
                 }
             );
+
+            $this->rlw->wantToRequest();
         }
 
 
         $this->l("Downloading posts for photos by chunks");
         foreach (array_chunk($postsToGet, 50) as $i => $postsBlock) {
+            $this->rlw->wantToRequest();
             $this->l("Chunk $i", 1);
             $this->vk
                 ->request('wall.getById', ['posts' => $postsBlock])
@@ -289,6 +301,7 @@ class Download extends Command {
         foreach ($this->vk->request('fave.getPosts')->batch(800) as $b) {
             $this->l("Processing batch block...", 1);
             $b->each($this->getPostProcessor(null, 1));
+            $this->rlw->wantToRequest();
         }
 
         $this->l("Done");
