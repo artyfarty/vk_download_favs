@@ -1,5 +1,6 @@
 # Created by .ignore support plugin (hsz.mobi)
 downloads
 *.sh
+*.csv
 .idea
 vendor

@@ -10,7 +10,7 @@
     }
   ],
   "require": {
-    "getjump/vk": "~0.4.0",
+    "getjump/vk": "~0.6.0",
     "symfony/console": "~2"
   },
   "autoload": {

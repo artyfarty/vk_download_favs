@@ -30,17 +30,110 @@ class Download extends Command {
      */
     protected $rlw;
 
+    /**
+     * @var bool $dislike
+     */
+    protected $dislike = false;
+
 
     public function configure() {
         $this->setDefinition(
             [
                 new InputOption('token', 't', InputOption::VALUE_REQUIRED, 'VK auth token'),
                 new InputOption('owners', 'o', InputOption::VALUE_OPTIONAL, 'Owners of media to download'),
-                new InputOption('rate_limit', null, InputOption::VALUE_OPTIONAL, 'Rate limit (usec)', "550000")
+                new InputOption('rate_limit', null, InputOption::VALUE_OPTIONAL, 'Rate limit (usec)', "600000"),
+                new InputOption("dislike", null, InputOption::VALUE_OPTIONAL, "Dislike after downloading", false),
                 //new InputOption('retries', 'r', InputOption::VALUE_OPTIONAL, 'Owners of media to download', 2),
             ]
         )
             ->setDescription('Скачать фото из избранных фото, постов и документов');
+    }
+
+    public function execute(InputInterface $input, OutputInterface $output) {
+        $this->vk = Vk::getInstance()->apiVersion('5.69');
+        $this->vk->setToken($input->getOption('token'));
+
+        $this->input = $input;
+        $this->output = $output;
+        $this->dislike = !!$input->getOption("dislike");
+
+        if ($this->dislike) {
+            $this->l("Warning! Will dislike after successful DL!", 0, "warn");
+        }
+
+        if ($input->getOption('owners')) {
+            $this->owners = explode(',', $input->getOption('owners'));
+            foreach ($this->owners as &$o) {
+                $o = +$o;
+            }
+        }
+
+        $this->rlw = new VkRateLimitWatcher(+$input->getOption('rate_limit'), $output);
+
+        $postsToGet = [];
+        $photosToGet = [];
+
+        $this->l("Enumerating fave photos");
+
+        $batchN = 0;
+        $photoN = 0;
+        $photoS = 0;
+
+        $this->rlw->wantToRequest();
+        foreach ($this->vk->request('fave.getPhotos')->batch(500) as $b) {
+            $this->l("Processing batch $batchN, $photoN photos so far, $photoS skipped", 1);
+            $b->each(
+                function ($i, $photo) use (&$postsToGet, &$photosToGet, &$photoN, &$photoS) {
+                    $this->l("Processing https://vk.com/fave?z=photo{$photo->owner_id}_{$photo->id}", 1);
+
+                    if ($this->owners && !in_array($photo->owner_id, $this->owners)) {
+                        $this->l("Diff. owner, skipping", 2);
+                        $photoS++;
+                        return;
+                    }
+
+                    $this->l("Processing photo#{$photo->id}", 1);
+
+                    if (property_exists($photo, 'post_id')) {
+                        $this->l("Will process post #{$photo->post_id} instead of photo #{$photo->id}", 2);
+                        $postsToGet[] = "{$photo->owner_id}_{$photo->post_id}";
+                        $photosToGet[] = $photo->id;
+                    } else {
+                        $this->l("Will save now", 2);
+                        $photoResult = $this->savePhoto($photo, [], 2);
+
+                        if ($photoResult) {
+                            $this->dislike($photo->id, "photo", 2);
+                        } else {
+                            $this->l("Cannot dislike photo#{$photo->id} because it's not saved ok", 2);
+                        }
+                    }
+                    $photoN++;
+                }
+            );
+
+            $this->rlw->wantToRequest();
+            $batchN++;
+        }
+
+
+        $this->l("Downloading posts for photos by chunks");
+        foreach (array_chunk($postsToGet, 50) as $i => $postsBlock) {
+            $this->rlw->wantToRequest();
+            $this->l("Chunk $i", 1);
+            $this->vk
+                ->request('wall.getById', ['posts' => $postsBlock])
+                ->each($this->getPostProcessor($photosToGet, 1));
+        }
+
+        $this->l("Downloading implicitly liked posts");
+        foreach ($this->vk->request('fave.getPosts')->batch(800) as $b) {
+            $this->l("Processing batch block...", 1);
+            $b->each($this->getPostProcessor(null, 1));
+            $this->rlw->wantToRequest();
+        }
+
+        $this->l("Done");
     }
 
     function l($message, $nest = 0, $loglevel = "info") {
@@ -55,6 +148,12 @@ class Download extends Command {
         };
     }
 
+    /**
+     * @param       $photo
+     * @param array $tags
+     * @param int   $nest
+     * @return bool
+     */
     function savePhoto($photo, $tags = [], $nest = 0) {
         $l = $this->getLogger("save", $nest);
 
@@ -105,9 +204,12 @@ class Download extends Command {
         save_photo:
         $path = $genSavePath($chosenUrl, 1);
 
+        $this->csvWrite("processed_content", ["photo", $photo->id, $path]);
+
+
         if (file_exists($path)) {
             $l("Photo already saved", 2);
-            return;
+            return true;
         } else {
             $data = @file_get_contents($chosenUrl);
             if ($data) {
@@ -130,7 +232,7 @@ class Download extends Command {
                     $l("Giving up", 2);
                 }
 
-                return;
+                return false;
             }
         }
 
@@ -143,6 +245,8 @@ class Download extends Command {
         $l("Tagging as $tMix", 1);
 
         system("tag --set $tMix $path");
+
+        return true;
     }
 
     /**
@@ -185,6 +289,10 @@ class Download extends Command {
                 $tags = ["batch"];
             }
 
+            $this->csvWrite("processed_content", ["post", $post->id]);
+
+            $result = true;
+
             foreach ($post->attachments as $a) {
                 $l("Processing attached {$a->type}", 1);
                 if ($a->type === 'photo') {
@@ -193,7 +301,7 @@ class Download extends Command {
                         continue;
                     }
 
-                    $this->savePhoto($a->photo, $tags, 2);
+                    $result = $result && $this->savePhoto($a->photo, $tags, 2);
                 } elseif ($a->type === 'doc') {
                     $saveDir = "downloads/{$post->owner_id}/";
                     if (!file_exists($saveDir)) {
@@ -203,12 +311,13 @@ class Download extends Command {
                     $retries = 2;
                     $path = "$saveDir/{$a->doc->title}";
 
+                    $this->csvWrite("processed_content", ["doc", $a->doc->id, $path]);
+
                     save_post_photo:
 
                     $l("Saving doc from {$a->doc->url} -> $path", 2);
                     if (file_exists($path)) {
                         $l("Doc already saved", 2);
-                        return;
                     } else {
                         $data = @file_get_contents($a->doc->url);
                         if ($data) {
@@ -223,87 +332,62 @@ class Download extends Command {
                             }
 
                             $l("Giving up", 2);
+                            $result = false;
                         }
                     }
                 }
             }
 
-
-            //echo "Unliking post {$post->id}\n";
-            //$vk->request('likes.delete', ['type' => 'post', 'item_id' => $post->id])->execute();
+            if ($result) {
+                $this->dislike($post->id, "post", 1);
+            } else {
+                $l("Cannot dislike post#{$post->id} because it's not saved completely", 1);
+            }
 
         };
     }
 
-    public function execute(InputInterface $input, OutputInterface $output) {
-        $this->vk = Vk::getInstance()->apiVersion('5.34');
-        $this->vk->setToken($input->getOption('token'));
+    /**
+     * @var mixed[][] $_dislikeBuffer
+     */
+    protected $_dislikeBuffer = [];
 
-        $this->input = $input;
-        $this->output = $output;
+    protected function dislike($id, $type = "photo", $nest = 0) {
+        if (!$this->dislike) {
+            return;
+        }
 
-        if ($input->getOption('owners')) {
-            $this->owners = explode(',', $input->getOption('owners'));
-            foreach ($this->owners as &$o) {
-                $o = +$o;
+        $this->l("Disliking {$type}#{$id} (buffered)", $nest);
+        $this->csvWrite("disliked", [$type, $id, date_create()->format("Y-m-d H:i:s")]);
+
+        $this->_dislikeBuffer[] = ['type' => $type, 'item_id' => $id];
+
+        if (count($this->_dislikeBuffer) >= 10) {
+            $this->l("Executing dislike buffer", $nest);
+
+            $code = "";
+            foreach ($this->_dislikeBuffer as $db) {
+                $code .= "API.likes.delete(" . json_encode($db) . "); ";
             }
-        }
 
-        $this->rlw = new VkRateLimitWatcher(+$input->getOption('rate_limit'), $output);
+            $code .= "return true;";
 
-        $postsToGet = [];
-        $photosToGet = [];
-
-        $this->l("Enumerating fave photos");
-
-        foreach ($this->vk->request('fave.getPhotos')->batch(800) as $b) {
-            $processedB = 0;
-            $b->each(
-                function ($i, $photo) use (&$postsToGet, &$photosToGet, &$processedB) {
-                    $this->l("Processing https://vk.com/fave?z=photo{$photo->owner_id}_{$photo->id}", 1);
-                    $processedB++;
-
-                    if ($this->owners && !in_array($photo->owner_id, $this->owners)) {
-                        $this->l("Diff. owner, skipping", 2);
-                        return;
-                    }
-
-                    $this->l("Processing photo#{$photo->id}", 1);
-
-                    if (property_exists($photo, 'post_id')) {
-                        $this->l("Will process post #{$photo->post_id} instead of photo #{$photo->id}", 2);
-                        $postsToGet[] = "{$photo->owner_id}_{$photo->post_id}";
-                        $photosToGet[] = $photo->id;
-                    } else {
-                        $this->l("Will save now", 2);
-                        $this->savePhoto($photo, [], 2);
-                    }
-
-                    //echo "Unliking photo {$photo->id}\n";
-                    //$vk->request('likes.delete', ['type' => 'photo', 'item_id' => $photo->id])->execute();
-                }
-            );
+            $this->l("Code: $code");
 
             $this->rlw->wantToRequest();
+            $this->vk->request('execute', ['code' => $code])->execute();
+            $this->_dislikeBuffer = [];
+        }
+    }
+
+
+    /** @var array $_csvs  */
+    protected $_csvs = [];
+    protected function csvWrite($name, $data = []) {
+        if (!array_key_exists($name, $this->_csvs)) {
+            $this->_csvs[$name] = fopen("{$name}.log.csv", "a");
         }
 
-
-        $this->l("Downloading posts for photos by chunks");
-        foreach (array_chunk($postsToGet, 50) as $i => $postsBlock) {
-            $this->rlw->wantToRequest();
-            $this->l("Chunk $i", 1);
-            $this->vk
-                ->request('wall.getById', ['posts' => $postsBlock])
-                ->each($this->getPostProcessor($photosToGet, 1));
-        }
-
-        $this->l("Downloading implicitly liked posts");
-        foreach ($this->vk->request('fave.getPosts')->batch(800) as $b) {
-            $this->l("Processing batch block...", 1);
-            $b->each($this->getPostProcessor(null, 1));
-            $this->rlw->wantToRequest();
-        }
-
-        $this->l("Done");
+        fputcsv($this->_csvs[$name], $data, ";");
     }
 }
